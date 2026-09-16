@@ -1,0 +1,8 @@
+.DS_Store
+/dist/
+/target/
+/app/
+/private/
+*.layout.json
+*.snapshot.json
+iphone-layout*.json

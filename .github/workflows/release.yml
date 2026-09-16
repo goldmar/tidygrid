@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify, test, and build
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          test "$version" = "$manifest_version"
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked --release
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          asset="tidygrid-${version}-aarch64-apple-darwin.tar.gz"
+          mkdir -p dist/package
+          cp target/release/tidygrid LICENSE NOTICE dist/package/
+          tar -C dist/package -czf "dist/$asset" tidygrid LICENSE NOTICE
+          shasum -a 256 "dist/$asset" > "dist/$asset.sha256"
+          sha256="$(cut -d ' ' -f 1 "dist/$asset.sha256")"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${asset}"
+          ruby scripts/render-homebrew-formula.rb "$version" "$sha256" "$url" "dist/tidygrid.rb"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/${{ steps.package.outputs.asset }}" \
+            "dist/${{ steps.package.outputs.asset }}.sha256" \
+            "dist/tidygrid.rb" \
+            --generate-notes \
+            --title "TidyGrid $GITHUB_REF_NAME"
