@@ -1,6 +1,6 @@
 [package]
 name = "tidygrid"
-version = "0.1.0"
+version = "0.1.1"
 description = "A deterministic CLI for backing up and rearranging an iPhone Home Screen"
 edition = "2021"
 license = "MIT"

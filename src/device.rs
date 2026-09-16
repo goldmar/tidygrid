@@ -143,6 +143,36 @@ fn to_plist(value: &serde_json::Value) -> Result<plist::Value> {
     }
 }
 
+/// SpringBoard reports modification timestamps as plist dates, while the
+/// previously working IconState implementation writes them back as strings.
+/// Sending the dates back as `<date>` values was silently ignored on the
+/// tested iOS version, so normalize only the outbound icon-state payload while
+/// keeping snapshots lossless.
+fn icon_state_plist(value: &serde_json::Value) -> Result<plist::Value> {
+    fn stringify_dates(value: &mut plist::Value) {
+        match value {
+            plist::Value::Date(date) => {
+                *value = plist::Value::String(date.to_xml_format());
+            }
+            plist::Value::Array(items) => {
+                for item in items {
+                    stringify_dates(item);
+                }
+            }
+            plist::Value::Dictionary(items) => {
+                for item in items.values_mut() {
+                    stringify_dates(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut value = to_plist(value)?;
+    stringify_dates(&mut value);
+    Ok(value)
+}
+
 fn command(name: &str) -> plist::Dictionary {
     let mut request = plist::Dictionary::new();
     request.insert("command".into(), plist::Value::String(name.into()));
@@ -362,7 +392,7 @@ pub async fn write_icon_state(
     let about = info(&provider).await?;
 
     let mut request = command("setIconState");
-    request.insert("iconState".into(), to_plist(state)?);
+    request.insert("iconState".into(), icon_state_plist(state)?);
     tell(&mut springboard(&provider).await?, request, "the write").await?;
 
     let settled = read_state(&mut springboard(&provider).await?).await?;
@@ -371,7 +401,7 @@ pub async fn write_icon_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{to_json, to_plist};
+    use super::{icon_state_plist, to_json, to_plist};
 
     #[test]
     fn plist_only_types_round_trip_through_tagged_json() {
@@ -385,6 +415,58 @@ mod tests {
         for value in values {
             assert_eq!(to_plist(&to_json(&value).unwrap()).unwrap(), value);
         }
+    }
+
+    #[test]
+    fn icon_state_dates_are_encoded_as_strings_for_springboard() {
+        let date = plist::Date::from_xml_format("2026-09-16T12:34:56.123456Z").unwrap();
+        let tagged = to_json(&plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (String::from("iconModDate"), plist::Value::Date(date)),
+            (
+                String::from("displayName"),
+                plist::Value::String("Example".into()),
+            ),
+        ])))
+        .unwrap();
+
+        let encoded = icon_state_plist(&tagged).unwrap();
+        let dictionary = encoded.as_dictionary().unwrap();
+        assert!(dictionary["iconModDate"].as_string().is_some());
+        assert_eq!(dictionary["displayName"].as_string(), Some("Example"));
+    }
+
+    #[test]
+    fn icon_state_compatibility_conversion_is_recursive_and_preserves_other_types() {
+        let date = plist::Date::from_xml_format("2026-09-16T12:34:56.123456Z").unwrap();
+        let state = plist::Value::Array(vec![plist::Value::Dictionary(
+            plist::Dictionary::from_iter([(
+                String::from("iconLists"),
+                plist::Value::Array(vec![plist::Value::Array(vec![plist::Value::Dictionary(
+                    plist::Dictionary::from_iter([
+                        (String::from("iconModDate"), plist::Value::Date(date)),
+                        (String::from("iconImage"), plist::Value::Data(vec![0, 1, 2])),
+                        (
+                            String::from("iconUid"),
+                            plist::Value::Uid(plist::Uid::new(7)),
+                        ),
+                    ]),
+                )])]),
+            )]),
+        )]);
+
+        let tagged = to_json(&state).unwrap();
+        let encoded = icon_state_plist(&tagged).unwrap();
+        let icon = encoded.as_array().unwrap()[0].as_dictionary().unwrap()["iconLists"]
+            .as_array()
+            .unwrap()[0]
+            .as_array()
+            .unwrap()[0]
+            .as_dictionary()
+            .unwrap();
+
+        assert!(icon["iconModDate"].as_string().is_some());
+        assert_eq!(icon["iconImage"].as_data(), Some([0, 1, 2].as_slice()));
+        assert_eq!(icon["iconUid"].as_uid().map(|uid| uid.get()), Some(7));
     }
 
     #[test]

@@ -37,7 +37,11 @@ jobs:
           mkdir -p dist/package
           cp target/release/tidygrid LICENSE NOTICE dist/package/
           tar -C dist/package -czf "dist/$asset" tidygrid LICENSE NOTICE
-          shasum -a 256 "dist/$asset" > "dist/$asset.sha256"
+          (
+            cd dist
+            shasum -a 256 "$asset" > "$asset.sha256"
+            shasum -a 256 -c "$asset.sha256"
+          )
           sha256="$(cut -d ' ' -f 1 "dist/$asset.sha256")"
           url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${asset}"
           ruby scripts/render-homebrew-formula.rb "$version" "$sha256" "$url" "dist/tidygrid.rb"
